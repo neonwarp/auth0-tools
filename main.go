@@ -43,10 +43,21 @@ func getTargetAuth0Client(ctx context.Context) (*management.Management, error) {
 }
 
 func exportUsers(ctx context.Context, m *management.Management) (string, error) {
+	exportFields := []map[string]interface{}{
+		{"name": "user_id"},
+		{"name": "email"},
+		{"name": "name"},
+		{"name": "user_metadata"},
+		{"name": "app_metadata"},
+		{"name": "created_at"},
+		{"name": "updated_at"},
+	}
+
 	exportJob := &management.Job{
 		ConnectionID: auth0.String(os.Getenv("SOURCE_CONNECTION_ID")),
 		Format:       auth0.String("json"),
 		Limit:        auth0.Int(50000),
+		Fields:       exportFields,
 	}
 
 	err := m.Job.ExportUsers(ctx, exportJob)
@@ -253,7 +264,7 @@ func main() {
 				log.Fatalf("Failed to unzip the file: %v", err)
 			}
 
-			chunks, err := splitJSONData(jsonData, 5000) // 5KB size chunks
+			chunks, err := splitJSONData(jsonData, 500000) // 500KB size chunks
 			if err != nil {
 				log.Fatalf("Failed to split the JSON data: %v", err)
 			}
