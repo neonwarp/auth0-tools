@@ -62,13 +62,13 @@ func TestUnzipGZFile(t *testing.T) {
 }
 
 func TestSplitJSONData(t *testing.T) {
-	users := `{"user_id": "1", "email": "user1@example.com"}
-{"user_id": "2", "email": "user2@example.com"}
-{"user_id": "3", "email": "user3@example.com"}`
+	users := `{"user_id": "1", "email": "user1@example.com", "email_verified": true}
+{"user_id": "2", "email": "user2@example.com", "email_verified": true}
+{"user_id": "3", "email": "user3@example.com", "email_verified": true}`
 
 	data := []byte(users)
 
-	chunks, err := splitJSONData(data, 100)
+	chunks, err := splitJSONData(data, 100, true)
 	if err != nil {
 		t.Fatalf("Failed to split JSON data: %v", err)
 	}

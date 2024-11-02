@@ -51,6 +51,7 @@ func exportUsers(ctx context.Context, m *management.Management) (string, error) 
 		{"name": "app_metadata"},
 		{"name": "created_at"},
 		{"name": "updated_at"},
+		{"name": "email_verified"},
 	}
 
 	exportJob := &management.Job{
@@ -125,7 +126,7 @@ func unzipGZFile(gzFile string) ([]byte, error) {
 	return []byte(result.String()), nil
 }
 
-func splitJSONData(data []byte, maxChunkSize int) ([][]map[string]interface{}, error) {
+func splitJSONData(data []byte, maxChunkSize int, email_verify bool) ([][]map[string]interface{}, error) {
 	var chunks [][]map[string]interface{}
 	chunk := []map[string]interface{}{}
 	chunkSize := 0
@@ -143,6 +144,8 @@ func splitJSONData(data []byte, maxChunkSize int) ([][]map[string]interface{}, e
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse JSON: %w", err)
 		}
+
+		user["email_verified"] = email_verify
 
 		userData, err := json.Marshal(user)
 		if err != nil {
@@ -264,7 +267,7 @@ func main() {
 				log.Fatalf("Failed to unzip the file: %v", err)
 			}
 
-			chunks, err := splitJSONData(jsonData, 500000) // 500KB size chunks
+			chunks, err := splitJSONData(jsonData, 500000, true) // 500KB size chunks
 			if err != nil {
 				log.Fatalf("Failed to split the JSON data: %v", err)
 			}
