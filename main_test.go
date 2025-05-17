@@ -68,7 +68,8 @@ func TestSplitJSONData(t *testing.T) {
 
 	data := []byte(users)
 
-	chunks, err := splitJSONData(data, 100, true)
+	reader := strings.NewReader(string(data))
+	chunks, err := splitJSONData(reader, 100, true)
 	if err != nil {
 		t.Fatalf("Failed to split JSON data: %v", err)
 	}

@@ -11,7 +11,7 @@ This is a Go CLI application that exports users from an Auth0 source tenant, dow
 
 ## Requirements
 
-- [Go](https://go.dev/) 1.23 or later
+- [Go](https://go.dev/) 1.24 or later
 - [Auth0 Management API](https://auth0.com/docs/api/management/v2) credentials for both source and target tenants.
 - Environment variables set up in a `.env` file.
 

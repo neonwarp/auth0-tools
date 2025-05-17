@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -18,25 +19,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func getSourceAuth0Client(ctx context.Context) (*management.Management, error) {
-	domain := os.Getenv("SOURCE_DOMAIN")
-	clientID := os.Getenv("SOURCE_CLIENT_ID")
-	clientSecret := os.Getenv("SOURCE_CLIENT_SECRET")
+func getAuth0Client(ctx context.Context, domainEnv, clientIDEnv, clientSecretEnv string) (*management.Management, error) {
+	domain := os.Getenv(domainEnv)
+	clientID := os.Getenv(clientIDEnv)
+	clientSecret := os.Getenv(clientSecretEnv)
 
 	if domain == "" || clientID == "" || clientSecret == "" {
-		return nil, fmt.Errorf("source Auth0 credentials are missing. Please check your .env file")
-	}
-
-	return management.New(domain, management.WithClientCredentials(ctx, clientID, clientSecret))
-}
-
-func getTargetAuth0Client(ctx context.Context) (*management.Management, error) {
-	domain := os.Getenv("DESTINATION_DOMAIN")
-	clientID := os.Getenv("DESTINATION_CLIENT_ID")
-	clientSecret := os.Getenv("DESTINATION_CLIENT_SECRET")
-
-	if domain == "" || clientID == "" || clientSecret == "" {
-		return nil, fmt.Errorf("target Auth0 credentials are missing. Please check your .env file")
+		return nil, fmt.Errorf("%s credentials are missing. Please check your .env file", domainEnv)
 	}
 
 	return management.New(domain, management.WithClientCredentials(ctx, clientID, clientSecret))
@@ -117,35 +106,32 @@ func unzipGZFile(gzFile string) ([]byte, error) {
 	}
 	defer gzReader.Close()
 
-	var result strings.Builder
+	var result bytes.Buffer
 	_, err = io.Copy(&result, gzReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read gz file: %w", err)
 	}
 
-	return []byte(result.String()), nil
+	return result.Bytes(), nil
 }
 
-func splitJSONData(data []byte, maxChunkSize int, email_verify bool) ([][]map[string]interface{}, error) {
+func splitJSONData(reader io.Reader, maxChunkSize int, emailVerify bool) ([][]map[string]interface{}, error) {
 	var chunks [][]map[string]interface{}
 	chunk := []map[string]interface{}{}
 	chunkSize := 0
 
-	lines := strings.Split(string(data), "\n")
+	decoder := json.NewDecoder(reader)
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line) // Remove leading/trailing whitespace
-		if line == "" {
-			continue // Skip empty lines
-		}
-
+	for {
 		var user map[string]interface{}
-		err := json.Unmarshal([]byte(line), &user)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse JSON: %w", err)
+		if err := decoder.Decode(&user); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("failed to decode JSON: %w", err)
 		}
 
-		user["email_verified"] = email_verify
+		user["email_verified"] = emailVerify
 
 		userData, err := json.Marshal(user)
 		if err != nil {
@@ -171,24 +157,35 @@ func splitJSONData(data []byte, maxChunkSize int, email_verify bool) ([][]map[st
 }
 
 func checkImportJobStatus(ctx context.Context, m *management.Management, jobID string) error {
-	for {
+	interval := 5 * time.Second
+	maxInterval := 30 * time.Second
+	totalWait := 0 * time.Second
+	maxWait := 5 * time.Minute
+
+	for totalWait < maxWait {
 		job, err := m.Job.Read(ctx, jobID)
 		if err != nil {
 			return fmt.Errorf("failed to read job status: %w", err)
 		}
 
-		if *job.Status == "completed" {
+		switch *job.Status {
+		case "completed":
 			fmt.Printf("Import job %s completed successfully.\n", jobID)
 			return nil
-		}
-
-		if *job.Status == "failed" {
+		case "failed":
 			return fmt.Errorf("import job %s failed", jobID)
 		}
 
-		fmt.Printf("Import job %s still in progress. Waiting...\n", jobID)
-		time.Sleep(10 * time.Second)
+		fmt.Printf("Import job %s in progress. Waiting %v...\n", jobID, interval)
+		time.Sleep(interval)
+		totalWait += interval
+
+		if interval < maxInterval {
+			interval *= 2
+		}
 	}
+
+	return fmt.Errorf("import job %s timed out", jobID)
 }
 
 func importUsersChunk(ctx context.Context, m *management.Management, users []map[string]interface{}) error {
@@ -209,19 +206,21 @@ func importUsersChunk(ctx context.Context, m *management.Management, users []map
 func main() {
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatalf("Error loading .env file")
+		log.Println("Warning: .env file could not be loaded. Make sure environment variables are set properly.")
 	}
 
 	ctx := context.Background()
 
-	sourceClient, err := getSourceAuth0Client(ctx)
+	sourceClient, err := getAuth0Client(ctx, "SOURCE_DOMAIN", "SOURCE_CLIENT_ID", "SOURCE_CLIENT_SECRET")
 	if err != nil {
-		log.Fatalf("Failed to create Auth0 source client: %v", err)
+		log.Printf("Error: Failed to create Auth0 source client: %v\n", err)
+		return
 	}
 
-	targetClient, err := getTargetAuth0Client(ctx)
+	targetClient, err := getAuth0Client(ctx, "DESTINATION_DOMAIN", "DESTINATION_CLIENT_ID", "DESTINATION_CLIENT_SECRET")
 	if err != nil {
-		log.Fatalf("Failed to create Auth0 target client: %v", err)
+		log.Printf("Error: Failed to create Auth0 target client: %v\n", err)
+		return
 	}
 
 	var rootCmd = &cobra.Command{Use: "auth0-cli"}
@@ -234,7 +233,8 @@ func main() {
 
 			jobID, err := exportUsers(ctx, sourceClient)
 			if err != nil {
-				log.Fatalf("Failed to export users: %v", err)
+				log.Printf("Error: Failed to export users: %v\n", err)
+				return
 			}
 
 			fmt.Printf("Export job started in source tenant. Job ID: %s\n", jobID)
@@ -262,14 +262,24 @@ func main() {
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Println("Starting user import into target tenant...")
 
+			file, err := os.Open("exported_users.json.gz")
+			if err != nil {
+				log.Printf("Failed to open JSON file: %v", err)
+				return
+			}
+			defer file.Close()
+
 			jsonData, err := unzipGZFile("exported_users.json.gz")
 			if err != nil {
-				log.Fatalf("Failed to unzip the file: %v", err)
+				log.Printf("Error: Failed to unzip the file: %v\n", err)
+				return
 			}
 
-			chunks, err := splitJSONData(jsonData, 500000, true) // 500KB size chunks
+			reader := strings.NewReader(string(jsonData))
+			chunks, err := splitJSONData(reader, 500000, true) // 500KB size chunks
 			if err != nil {
-				log.Fatalf("Failed to split the JSON data: %v", err)
+				log.Printf("Error: Failed to split JSON data: %v\n", err)
+				return
 			}
 
 			for i, chunk := range chunks {
@@ -286,5 +296,7 @@ func main() {
 	}
 
 	rootCmd.AddCommand(exportCmd, importCmd)
-	rootCmd.Execute()
+	if err := rootCmd.Execute(); err != nil {
+		log.Printf("Error: Command execution failed: %v\n", err)
+	}
 }
